@@ -94,7 +94,13 @@ jobs:
         run: |
           make test TESTS='Zend/tests/asymmetric_visibility'
           make test TESTS='Zend/tests/readonly_props/gh7942.phpt'
+      - name: Dump PHPT differences when native test fails
+        if: failure()
+        run: |
+          find Zend/tests/asymmetric_visibility -type f \\( -name '*gh24280*.diff' -o -name '*gh24280*.out' -o -name '*gh24280*.exp' \\) -print -exec cat {} \\;
+
       - name: Exact-output checks for interpreter, OPcache and JIT modes
+        if: always()
         run: |
           python3 - <<'PY'
           from difflib import unified_diff
