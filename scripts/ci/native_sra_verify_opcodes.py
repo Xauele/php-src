@@ -26,6 +26,7 @@ EXCLUDED = [
     "SraInheritedExcluded::value",  # inherited property
     "SraClassAttrExcluded::value",  # class attribute
     "SraPropertyAttrExcluded::value",  # property attribute
+    "SraAsymmetricExcluded::value",  # public private(set), not ordinary public
     "SraStringExcluded::value",  # non-scalar default with refcounting
 ]
 
