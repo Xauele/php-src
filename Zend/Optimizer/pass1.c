@@ -68,6 +68,70 @@ static void replace_by_const_or_qm_assign(zend_op_array *op_array, zend_op *opli
  * The feature is disabled in normal PHP builds; it exists solely to prove
  * that the narrow transformation can be compiled, measured and falsified.
  */
+/*
+ * Shared proof for a tiny, non-escaping, constructorless final class.
+ * Every instance property must have a plain unrefcounted default or be
+ * uninitialized. No user-defined handlers, hooks or lifecycle callbacks.
+ * This is deliberately more conservative than Zend SSA escape analysis.
+ */
+static bool zend_optimizer_sra_plain_property(
+		const zend_op_array *op_array, zend_string *name,
+		const zend_property_info **out_info, const zval **out_defaults)
+{
+	const zend_class_entry *ce = op_array->scope;
+	const uint32_t required_flags =
+		ZEND_ACC_FINAL | ZEND_ACC_LINKED | ZEND_ACC_CONSTANTS_UPDATED;
+	if (!ce
+	 || ce->type != ZEND_USER_CLASS
+	 || (ce->ce_flags & required_flags) != required_flags
+	 || ce->parent
+	 || ce->create_object
+	 || ce->default_object_handlers != &std_object_handlers
+	 || ce->constructor || ce->destructor
+	 || ce->__get || ce->__set || ce->__isset || ce->__unset
+	 || ce->num_hooked_props || ce->attributes
+	 || (ce->ce_flags & (ZEND_ACC_DEPRECATED | ZEND_ACC_HAS_AST_PROPERTIES))
+	 || ce->default_properties_count <= 0
+	 || !ce->default_properties_table) {
+		return false;
+	}
+
+	const zend_property_info *info = zend_hash_find_ptr(&ce->properties_info, name);
+	if (!info
+	 || info->ce != ce
+	 || info->flags != ZEND_ACC_PUBLIC
+	 || info->attributes || info->hooks
+	 || info->offset < OBJ_PROP_TO_OFFSET(0)) {
+		return false;
+	}
+	uint32_t index = OBJ_PROP_TO_NUM(info->offset);
+	if (index >= (uint32_t) ce->default_properties_count) {
+		return false;
+	}
+
+	/* Avoid baking per-request mutable class defaults into persistent code. */
+	const zval *defaults = CE_DEFAULT_PROPERTIES_TABLE(ce);
+	if (!defaults || defaults != ce->default_properties_table) {
+		return false;
+	}
+	for (uint32_t i = 0; i < (uint32_t) ce->default_properties_count; ++i) {
+		switch (Z_TYPE(defaults[i])) {
+			case IS_UNDEF:
+			case IS_NULL:
+			case IS_FALSE:
+			case IS_TRUE:
+			case IS_LONG:
+			case IS_DOUBLE:
+				break;
+			default:
+				return false;
+		}
+	}
+	*out_info = info;
+	*out_defaults = defaults;
+	return true;
+}
+
 static bool zend_optimizer_fold_temporary_self_property(
 		zend_op_array *op_array, zend_op *fetch, zval *result)
 {
@@ -96,52 +160,13 @@ static bool zend_optimizer_fold_temporary_self_property(
 		return false;
 	}
 
-	/* All handlers must be canonical: custom read_property/get_gc/free_obj are observable. */
-	const zend_class_entry *ce = op_array->scope;
-	const uint32_t required_flags =
-		ZEND_ACC_FINAL | ZEND_ACC_LINKED | ZEND_ACC_CONSTANTS_UPDATED;
-	if (!ce
-	 || ce->type != ZEND_USER_CLASS
-	 || (ce->ce_flags & required_flags) != required_flags
-	 || ce->parent
-	 || ce->create_object
-	 || ce->default_object_handlers != &std_object_handlers
-	 || ce->constructor || ce->destructor
-	 || ce->__get || ce->__set || ce->__isset || ce->__unset
-	 || ce->num_hooked_props
-	 || ce->attributes
-	 || (ce->ce_flags & (ZEND_ACC_DEPRECATED | ZEND_ACC_HAS_AST_PROPERTIES))
-	 || ce->default_properties_count <= 0
-	 || !ce->default_properties_table) {
+	const zend_property_info *info;
+	const zval *defaults;
+	if (!zend_optimizer_sra_plain_property(
+			op_array, Z_STR(ZEND_OP2_LITERAL(fetch)), &info, &defaults)) {
 		return false;
 	}
-
-	/* Property flag bits overlap with method/class flags. In particular, */
-	/* ZEND_ACC_DEPRECATED is NOT a property flag: bit 11 means protected(set). */
-	/* Exactly public excludes asymmetric visibility and other modifiers. */
-	zend_property_info *prop_info = zend_hash_find_ptr(
-		&ce->properties_info, Z_STR(ZEND_OP2_LITERAL(fetch)));
-	if (!prop_info
-	 || prop_info->ce != ce
-	 || prop_info->flags != ZEND_ACC_PUBLIC
-	 || prop_info->attributes
-	 || prop_info->hooks
-	 || prop_info->offset < OBJ_PROP_TO_OFFSET(0)) {
-		return false;
-	}
-
-	const uint32_t prop_index = OBJ_PROP_TO_NUM(prop_info->offset);
-	if (prop_index >= (uint32_t) ce->default_properties_count) {
-		return false;
-	}
-	/* As Zend's _object_properties_init() does, use the current class defaults.
-	 * A persistent class may have mutable request-local defaults. Without a
-	 * proof of their stability, never bake those values into cached opcodes. */
-	const zval *defaults = CE_DEFAULT_PROPERTIES_TABLE(ce);
-	if (!defaults || defaults != ce->default_properties_table) {
-		return false;
-	}
-	const zval *initial = &defaults[prop_index];
+	const zval *initial = &defaults[OBJ_PROP_TO_NUM(info->offset)];
 	switch (Z_TYPE_P(initial)) {
 		case IS_NULL:
 		case IS_FALSE:
@@ -153,32 +178,143 @@ static bool zend_optimizer_fold_temporary_self_property(
 			return false;
 	}
 
-	/*
-	 * The selected field is scalar, but constructing the *whole* object also
-	 * initializes every other property. Until a proof covers the other
-	 * values' lifetime and recursive constant evaluation, reject any
-	 * refcounted, AST, or otherwise non-plain class default.
-	 *
-	 * IS_UNDEF is an uninitialized typed property and is permitted as an
-	 * unrelated slot: it has no constructor or destructor side effect.
-	 */
-	for (uint32_t i = 0; i < (uint32_t) ce->default_properties_count; ++i) {
-		switch (Z_TYPE(defaults[i])) {
-			case IS_UNDEF:
-			case IS_NULL:
-			case IS_FALSE:
-			case IS_TRUE:
-			case IS_LONG:
-			case IS_DOUBLE:
+	ZVAL_COPY_VALUE(result, initial);
+	MAKE_NOP(new_op);
+	MAKE_NOP(call_op);
+	return true;
+}
+
+/*
+ * Genuine single-basic-block scalar forwarding: the object's value is
+ * written from a *runtime int argument*, then read without escaping.
+ *
+ * This is intentionally not general SRA. It only accepts a whole-method,
+ * linear 1-parameter / 1-field pattern with no other operations and no
+ * reference parameter. A future SSA pass can cover multiple fields,
+ * branches and side exits with proper deoptimization materialization.
+ */
+static bool zend_optimizer_sra_forward_dynamic_int(
+		zend_op_array *op_array, zend_op *fetch)
+{
+	if (fetch - op_array->opcodes != 6
+	 || op_array->last < 8
+	 || op_array->last > 12
+	 || op_array->last_try_catch != 0
+	 || op_array->num_args != 1
+	 || op_array->required_num_args != 1
+	 || !op_array->arg_info
+	 || !(op_array->fn_flags & ZEND_ACC_STATIC)
+	 || !(op_array->fn_flags & ZEND_ACC_HAS_RETURN_TYPE)
+	 || ZEND_ARG_SEND_MODE(&op_array->arg_info[0]) != ZEND_SEND_BY_VAL
+	 || !ZEND_TYPE_IS_SET(op_array->arg_info[0].type)
+	 || ZEND_TYPE_PURE_MASK(op_array->arg_info[0].type) != MAY_BE_LONG
+	 || ZEND_TYPE_PURE_MASK((op_array->arg_info - 1)->type) != MAY_BE_LONG
+	 || fetch->opcode != ZEND_FETCH_OBJ_R
+	 || fetch->op1_type != IS_CV
+	 || fetch->op2_type != IS_CONST
+	 || fetch->result_type != IS_TMP_VAR
+	 || Z_TYPE(ZEND_OP2_LITERAL(fetch)) != IS_STRING) {
+		return false;
+	}
+
+	zend_op *recv = op_array->opcodes;
+	zend_op *new_op = recv + 1;
+	zend_op *call = recv + 2;
+	zend_op *assign = recv + 3;
+	zend_op *store = recv + 4;
+	zend_op *data = recv + 5;
+	if (recv->opcode != ZEND_RECV
+	 || recv->op1.num != 1
+	 || recv->result_type != IS_CV
+	 || new_op->opcode != ZEND_NEW
+	 || new_op->op1_type != IS_UNUSED
+	 || (new_op->op1.num & ZEND_FETCH_CLASS_MASK) != ZEND_FETCH_CLASS_SELF
+	 || (new_op->result_type != IS_VAR && new_op->result_type != IS_TMP_VAR)
+	 || new_op->extended_value != 0
+	 || call->opcode != ZEND_DO_FCALL
+	 || call->result_type != IS_UNUSED
+	 || assign->opcode != ZEND_ASSIGN
+	 || assign->op1_type != IS_CV
+	 || assign->op2_type != new_op->result_type
+	 || assign->op2.var != new_op->result.var
+	 || assign->result_type != IS_UNUSED
+	 || store->opcode != ZEND_ASSIGN_OBJ
+	 || store->op1_type != IS_CV
+	 || store->op1.var != assign->op1.var
+	 || store->op2_type != IS_CONST
+	 || store->result_type != IS_UNUSED
+	 || data->opcode != ZEND_OP_DATA
+	 || data->op1_type != IS_CV
+	 || data->op1.var != recv->result.var
+	 || data->result_type != IS_UNUSED
+	 || fetch->op1.var != assign->op1.var
+	 || !zend_string_equals(
+		Z_STR(ZEND_OP2_LITERAL(store)), Z_STR(ZEND_OP2_LITERAL(fetch)))) {
+		return false;
+	}
+
+	const zend_property_info *info;
+	const zval *defaults;
+	if (!zend_optimizer_sra_plain_property(
+			op_array, Z_STR(ZEND_OP2_LITERAL(fetch)), &info, &defaults)
+	 || !ZEND_TYPE_IS_SET(info->type)
+	 || ZEND_TYPE_PURE_MASK(info->type) != MAY_BE_LONG) {
+		return false;
+	}
+
+	/* The only remaining operations must verify and return the read value.
+	 * In particular, calls, jumps, aliases and other reads are forbidden. */
+	bool returned = false;
+	for (zend_op *tail = fetch + 1; tail < op_array->opcodes + op_array->last; ++tail) {
+		switch (tail->opcode) {
+			case ZEND_VERIFY_RETURN_TYPE:
+				if ((!returned
+				 && (tail->op1_type != fetch->result_type
+				  || tail->op1.var != fetch->result.var))
+				 || (returned && tail->op1_type != IS_UNUSED)) {
+					return false;
+				}
+				break;
+			case ZEND_RETURN:
+				if (!returned) {
+					if (tail->op1_type != fetch->result_type
+					 || tail->op1.var != fetch->result.var) {
+						return false;
+					}
+					returned = true;
+				} else if (tail->op1_type != IS_CONST
+				 || Z_TYPE(ZEND_OP1_LITERAL(tail)) != IS_NULL) {
+					return false;
+				}
+				break;
+			case ZEND_NOP:
 				break;
 			default:
 				return false;
 		}
 	}
+	if (!returned) {
+		return false;
+	}
 
-	ZVAL_COPY_VALUE(result, initial);
+	/*
+	 * The int RECV already enforces the same type as this int property.
+	 * Under these exact conditions no coercion, hook or error can occur.
+	 * Forward the CV directly into the read's temporary result.
+	 */
+	uint32_t source = data->op1.var;
+	literal_dtor(&ZEND_OP2_LITERAL(store));
+	literal_dtor(&ZEND_OP2_LITERAL(fetch));
 	MAKE_NOP(new_op);
-	MAKE_NOP(call_op);
+	MAKE_NOP(call);
+	MAKE_NOP(assign);
+	MAKE_NOP(store);
+	MAKE_NOP(data);
+	fetch->opcode = ZEND_QM_ASSIGN;
+	fetch->op1_type = IS_CV;
+	fetch->op1.var = source;
+	SET_UNUSED(fetch->op2);
+	fetch->extended_value = 0;
 	return true;
 }
 #endif
@@ -404,6 +540,8 @@ void zend_optimizer_pass1(zend_op_array *op_array, zend_optimizer_ctx *ctx)
 		case ZEND_FETCH_OBJ_R:
 			if (zend_optimizer_fold_temporary_self_property(op_array, opline, &result)) {
 				replace_by_const_or_qm_assign(op_array, opline, &result);
+			} else {
+				zend_optimizer_sra_forward_dynamic_int(op_array, opline);
 			}
 			break;
 #endif
