@@ -89,6 +89,12 @@ final class SraPropertyAttrExcluded
     public static function value(): int { return (new self())->value; }
 }
 
+final class SraAsymmetricExcluded
+{
+    public private(set) int $value = 42;
+    public static function value(): int { return (new self())->value; }
+}
+
 final class SraStringExcluded
 {
     public string $value = '42';
@@ -107,6 +113,7 @@ $actual = [
     SraInheritedExcluded::value(),
     SraClassAttrExcluded::value(),
     SraPropertyAttrExcluded::value(),
+    SraAsymmetricExcluded::value(),
     SraStringExcluded::value(),
     SraExcluded::$constructs,
     SraDestructorExcluded::$destructions,
@@ -114,7 +121,7 @@ $actual = [
 ];
 
 $expected = [
-    42, true, null, 2.5, 42, 42, 42, 42, 42, 42, 42, '42', 1, 1, 1,
+    42, true, null, 2.5, 42, 42, 42, 42, 42, 42, 42, 42, '42', 1, 1, 1,
 ];
 if ($actual !== $expected) {
     throw new RuntimeException('Unexpected runtime semantics: ' . var_export($actual, true));
