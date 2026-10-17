@@ -12,8 +12,10 @@ class PrivateSetter {
         unset($value);
     }
 
+    private static array $retainedReferences = [];
+
     public function prepareReference(): void {
-        $reference =& $this->value;
+        self::$retainedReferences[] =& $this->value;
     }
 }
 
@@ -67,6 +69,9 @@ var_dump($private->value);
 
 $existingReference = new PrivateSetter();
 $existingReference->prepareReference();
+if (ReflectionReference::fromArrayElement((array) $existingReference, 'value') === null) {
+    throw new LogicException('Test setup failed: value is not a persistent reference');
+}
 echo "existing reference outside: ";
 acquireReference($existingReference);
 var_dump($existingReference->value);
