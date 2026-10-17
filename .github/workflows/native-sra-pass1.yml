@@ -1,0 +1,160 @@
+name: Experimental native SRA pass1
+on:
+  push:
+    branches: [experiment/native-sra-pass1-prototype]
+    paths:
+      - Zend/Optimizer/pass1.c
+      - Zend/benchmarks/native_sra_pass1_probe.php
+      - Zend/tests/optimizer/native_sra_pass1_*
+      - .github/workflows/native-sra-pass1.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build-and-verify:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: baseline-release
+            sra: false
+            cflags: "-g -O2"
+            debug: false
+            zts: false
+          - name: candidate-release
+            sra: true
+            cflags: "-g -O2 -DZEND_SRA_EXPERIMENTAL=1"
+            debug: false
+            zts: false
+          - name: candidate-debug-zts
+            sra: true
+            cflags: "-g -O0 -DZEND_SRA_EXPERIMENTAL=1"
+            debug: true
+            zts: true
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install dependencies and fingerprint platform
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential autoconf bison re2c pkg-config \
+            libxml2-dev libsqlite3-dev
+          git rev-parse HEAD
+          gcc --version | head -n 1
+          uname -a
+      - name: Configure PHP
+        shell: bash
+        env:
+          BUILD_CFLAGS: ${{ matrix.cflags }}
+          DEBUG_BUILD: ${{ matrix.debug }}
+          ZTS_BUILD: ${{ matrix.zts }}
+        run: |
+          set -euo pipefail
+          ./buildconf --force
+          set -- --disable-all --enable-cli --disable-cgi --enable-filter --enable-opcache
+          if [[ "$DEBUG_BUILD" == "true" ]]; then
+            set -- "$@" --enable-debug
+          else
+            set -- "$@" --disable-debug
+          fi
+          if [[ "$ZTS_BUILD" == "true" ]]; then
+            set -- "$@" --enable-zts
+          else
+            set -- "$@" --disable-zts
+          fi
+          CFLAGS="$BUILD_CFLAGS" ./configure "$@"
+      - name: Compile PHP
+        run: make -j4
+      - name: Build identity
+        run: |
+          sapi/cli/php -v
+          sapi/cli/php -n -m
+      - name: PHPT semantic regression
+        run: |
+          make TEST_PHP_ARGS=-j2 TESTS=Zend/tests/optimizer/native_sra_pass1_prototype.phpt test
+      - name: Verify native opcode elimination and negative control
+        shell: bash
+        env:
+          SRA_ENABLED: ${{ matrix.sra }}
+        run: |
+          set -euo pipefail
+          mkdir -p native-proof
+          sapi/cli/php -n \
+            -d opcache.enable_cli=1 \
+            -d opcache.file_update_protection=0 \
+            -d opcache.opt_debug_level=131072 \
+            Zend/tests/optimizer/native_sra_pass1_inspect.php \
+            > native-proof/inspect.out 2> native-proof/opcodes.log
+          grep -q 'int(42)' native-proof/inspect.out
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+          log = Path('native-proof/opcodes.log').read_text()
+          def has_new(label):
+              marker = label + ':'
+              assert marker in log, f'No optimized bytecode for {label}'
+              chunk = log.split(marker, 1)[1].split('\n\n', 1)[0]
+              return bool(re.search(r'\bNEW\b', chunk)), chunk
+          enabled = os.environ['SRA_ENABLED'] == 'true'
+          candidate_has_new, candidate_ops = has_new('SraFoldable::value')
+          excluded_has_new, excluded_ops = has_new('SraExcluded::value')
+          assert candidate_has_new != enabled, candidate_ops
+          assert excluded_has_new, excluded_ops
+          print('Experimental folding enabled:', enabled)
+          print('Foldable NEW present:', candidate_has_new)
+          print('Constructor-control NEW present:', excluded_has_new)
+          print('Optimized code:', candidate_ops)
+          PY
+      - name: Benchmark same codepath with and without C macro
+        run: |
+          sapi/cli/php -n \
+            -d opcache.enable_cli=1 \
+            -d opcache.file_update_protection=0 \
+            -d opcache.jit_buffer_size=0 \
+            Zend/benchmarks/native_sra_pass1_probe.php 250000 \
+            > native-proof/benchmark.json
+          cat native-proof/benchmark.json
+      - name: Existing JIT regression suite
+        if: matrix.name == 'candidate-release'
+        run: |
+          make TEST_PHP_ARGS=-j4 TESTS=ext/opcache/tests/jit/ test
+      - name: Differential semantic and seeded fuzz oracles
+        if: matrix.sra
+        shell: bash
+        run: |
+          set -euo pipefail
+          for fixture in oracle fuzz; do
+            for mode in off tracing function; do
+              if [ "$mode" = off ]; then
+                buffer=0
+              else
+                buffer=128M
+              fi
+              sapi/cli/php -n \
+                -d opcache.enable_cli=1 \
+                -d opcache.file_update_protection=0 \
+                -d opcache.jit_hot_loop=16 \
+                -d opcache.jit_hot_func=2 \
+                -d opcache.jit_buffer_size="$buffer" \
+                -d opcache.jit="$mode" \
+                "Zend/tests/optimizer/native_scalar_replacement_$fixture.php" \
+                > "native-proof/$fixture-$mode.json"
+            done
+            diff -u "native-proof/$fixture-off.json" "native-proof/$fixture-tracing.json"
+            diff -u "native-proof/$fixture-off.json" "native-proof/$fixture-function.json"
+          done
+          sha256sum native-proof/oracle-*.json native-proof/fuzz-*.json
+      - name: Preserve evidence artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-sra-pass1-${{ matrix.name }}
+          path: native-proof/
+          if-no-files-found: warn
