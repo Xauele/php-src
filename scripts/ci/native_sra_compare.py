@@ -26,13 +26,13 @@ def percentiles(xs: list[float], lo: float = 0.025, hi: float = 0.975) -> tuple[
     return xs[int((len(xs) - 1) * lo)], xs[int((len(xs) - 1) * hi)]
 
 
-def run_once(binary: str, iterations: int) -> dict:
+def run_once(binary: str, iterations: int, source: str) -> dict:
     cmd = [
         binary, "-n",
         "-d", "opcache.enable_cli=1",
         "-d", "opcache.file_update_protection=0",
         "-d", "opcache.jit_buffer_size=0",
-        NATIVE_BENCH, str(iterations),
+        source, str(iterations),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=90, check=True)
     payload = json.loads(result.stdout)
@@ -65,6 +65,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline", required=True)
     parser.add_argument("--candidate", required=True)
+    parser.add_argument("--source", default=NATIVE_BENCH)
     parser.add_argument("--iterations", type=int, default=500_000)
     parser.add_argument("--pairs", type=int, default=10)
     parser.add_argument("--output", required=True)
@@ -88,7 +89,7 @@ def main() -> int:
         )
         observations = {name: [] for name in binaries}
         for name in sequence:
-            payload = run_once(binaries[name], args.iterations)
+            payload = run_once(binaries[name], args.iterations, args.source)
             observations[name].append(payload)
         # Two independent PHP process medians per mode in each paired round.
         def per_round(key: str, name: str) -> float:
@@ -120,7 +121,7 @@ def main() -> int:
     control_ci = bootstrap_ci(controls)
     report = {
         "purpose": "Opt-in PHP 8.7 pass1 peephole microbenchmark; not whole-PHP performance",
-        "source": NATIVE_BENCH,
+        "source": args.source,
         "platform": platform.platform(),
         "processor": platform.processor(),
         "python": sys.version.split()[0],

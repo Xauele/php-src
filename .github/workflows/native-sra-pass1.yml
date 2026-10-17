@@ -1,7 +1,7 @@
 name: Experimental native SRA pass1
 on:
   push:
-    branches: [experiment/native-sra-pass1-prototype, experiment/native-sra-proof-v2]
+    branches: [experiment/native-sra-pass1-prototype, experiment/native-sra-proof-v2, experiment/native-sra-dynamic-v0]
     paths:
       - Zend/Optimizer/pass1.c
       - Zend/benchmarks/native_sra_pass1_probe.php
@@ -10,6 +10,8 @@ on:
       - scripts/ci/native_sra_verify_opcodes.py
       - scripts/ci/native_sra_mutate.py
       - docs/performance/native-sra-proof-v2.md
+      - Zend/tests/optimizer/native_sra_dynamic_*
+      - Zend/benchmarks/native_sra_dynamic_probe.php
       - .github/workflows/native-sra-pass1.yml
   pull_request:
     paths:
@@ -109,7 +111,7 @@ jobs:
           retention-days: 7
       - name: PHPT semantic regression
         run: |
-          make TEST_PHP_ARGS=-j2 TESTS="Zend/tests/optimizer/native_sra_pass1_prototype.phpt Zend/tests/optimizer/native_sra_pass1_guards.phpt" test
+          make TEST_PHP_ARGS=-j2 TESTS="Zend/tests/optimizer/native_sra_pass1_prototype.phpt Zend/tests/optimizer/native_sra_pass1_guards.phpt Zend/tests/optimizer/native_sra_dynamic_001.phpt" test
       - name: Verify optimized opcodes for 12 safe and unsafe variants
         shell: bash
         env:
@@ -155,6 +157,40 @@ jobs:
           done
           diff -u native-proof/candidate-off.out native-proof/candidate-tracing.out
           diff -u native-proof/candidate-off.out native-proof/candidate-function.out
+      - name: Verify actual scalar forwarding in dynamic int methods
+        shell: bash
+        env:
+          SRA_ENABLED: \${{ matrix.sra }}
+        run: |
+          set -euo pipefail
+          mkdir -p native-proof
+          sapi/cli/php -n -d opcache.enable_cli=1 \
+            -d opcache.file_update_protection=0 \
+            -d opcache.opt_debug_level=131072 \
+            Zend/tests/optimizer/native_sra_dynamic_inspect.php \
+            > native-proof/dynamic-inspect.out 2> native-proof/dynamic-opcodes.log
+          grep -qx 'DYNAMIC_SRA_OK' native-proof/dynamic-inspect.out
+          SRA_ON="$SRA_ENABLED" python3 - <<'PY'
+          import os, re
+          from pathlib import Path
+          log = Path('native-proof/dynamic-opcodes.log').read_text()
+          def has_new(name):
+              marker = name + ':'
+              assert marker in log, name
+              sections = log.split(marker)[1:]
+              optimized = [s.split('\n\n', 1)[0] for s in sections
+                           if '(after optimizer)' in s.split('\n\n', 1)[0]]
+              assert optimized, name
+              return bool(re.search(r'(?m)^\s*\d+\s+.*\bNEW\b', optimized[-1]))
+          enabled = os.environ['SRA_ON'] == 'true'
+          assert has_new('SraDynCandidate::identity') != enabled
+          for name in ('SraDynConstructorExcluded::identity',
+                       'SraDynStringExcluded::identity',
+                       'SraDynRefExcluded::identity'):
+              assert has_new(name), name
+          print('Dynamic scalar forwarding opcode proof: PASS')
+          PY
+
       - name: Benchmark same codepath with and without C macro
         run: |
           sapi/cli/php -n \
@@ -362,10 +398,19 @@ jobs:
             --iterations 500000 \
             --pairs 12 \
             --output native-proof/paired_abba.json
+          python3 scripts/ci/native_sra_compare.py \
+            --baseline native-sra-builds/baseline/php \
+            --candidate native-sra-builds/candidate/php \
+            --source Zend/benchmarks/native_sra_dynamic_probe.php \
+            --iterations 500000 \
+            --pairs 12 \
+            --output native-proof/dynamic_abba.json
       - name: Preserve controlled comparison
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: native-sra-controlled-abba
-          path: native-proof/paired_abba.json
+          path: |
+            native-proof/paired_abba.json
+            native-proof/dynamic_abba.json
           if-no-files-found: warn
