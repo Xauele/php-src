@@ -25,11 +25,12 @@ def main() -> None:
         code = replace_one(code, " || prop_info->flags != ZEND_ACC_PUBLIC", "")
     elif kind == "unrelated-default":
         begin = "\tfor (uint32_t i = 0; i < (uint32_t) ce->default_properties_count; ++i) {"
-        end = "\n\tZVAL_COPY_VALUE(result, initial);"
+        end = "\n\t*out_info = info;"
         if code.count(begin) != 1 or code.count(end) != 1:
             raise RuntimeError("Could not identify the unrelated-default guard")
         start = code.index(begin)
         finish = code.index(end, start)
+        assert "zend_optimizer_fold_temporary_self_property" not in code[start:finish], "Crossed function boundary"
         code = code[:start] + code[finish:]
     else:
         raise SystemExit("Unknown mutation: " + kind)
