@@ -73,11 +73,16 @@ static bool zend_optimizer_fold_temporary_self_property(
 {
 	if (fetch - op_array->opcodes < 2
 	 || (fetch->op1_type != IS_VAR && fetch->op1_type != IS_TMP_VAR)
+	 || fetch->result_type != IS_TMP_VAR
 	 || fetch->op2_type != IS_CONST
 	 || Z_TYPE(ZEND_OP2_LITERAL(fetch)) != IS_STRING) {
 		return false;
 	}
 
+	/* The VM skips the DO_FCALL after constructorless NEW only when
+	 * extended_value == 0, the following opcode is DO_FCALL, and the
+	 * call's result is unused. Match that exact zero-argument shape;
+	 * don't silently remove a possible dummy call frame. */
 	zend_op *new_op = fetch - 2;
 	zend_op *call_op = fetch - 1;
 	if (new_op->opcode != ZEND_NEW
@@ -85,7 +90,9 @@ static bool zend_optimizer_fold_temporary_self_property(
 	 || (new_op->op1.num & ZEND_FETCH_CLASS_MASK) != ZEND_FETCH_CLASS_SELF
 	 || new_op->result_type != fetch->op1_type
 	 || new_op->result.var != fetch->op1.var
-	 || call_op->opcode != ZEND_DO_FCALL) {
+	 || new_op->extended_value != 0
+	 || call_op->opcode != ZEND_DO_FCALL
+	 || call_op->result_type != IS_UNUSED) {
 		return false;
 	}
 
@@ -103,7 +110,7 @@ static bool zend_optimizer_fold_temporary_self_property(
 	 || ce->__get || ce->__set || ce->__isset || ce->__unset
 	 || ce->num_hooked_props
 	 || ce->attributes
-	 || (ce->ce_flags & ZEND_ACC_DEPRECATED)
+	 || (ce->ce_flags & (ZEND_ACC_DEPRECATED | ZEND_ACC_HAS_AST_PROPERTIES))
 	 || ce->default_properties_count <= 0
 	 || !ce->default_properties_table) {
 		return false;
@@ -127,7 +134,14 @@ static bool zend_optimizer_fold_temporary_self_property(
 	if (prop_index >= (uint32_t) ce->default_properties_count) {
 		return false;
 	}
-	const zval *initial = &ce->default_properties_table[prop_index];
+	/* As Zend's _object_properties_init() does, use the current class defaults.
+	 * A persistent class may have mutable request-local defaults. Without a
+	 * proof of their stability, never bake those values into cached opcodes. */
+	const zval *defaults = CE_DEFAULT_PROPERTIES_TABLE(ce);
+	if (!defaults || defaults != ce->default_properties_table) {
+		return false;
+	}
+	const zval *initial = &defaults[prop_index];
 	switch (Z_TYPE_P(initial)) {
 		case IS_NULL:
 		case IS_FALSE:
@@ -137,6 +151,29 @@ static bool zend_optimizer_fold_temporary_self_property(
 			break;
 		default:
 			return false;
+	}
+
+	/*
+	 * The selected field is scalar, but constructing the *whole* object also
+	 * initializes every other property. Until a proof covers the other
+	 * values' lifetime and recursive constant evaluation, reject any
+	 * refcounted, AST, or otherwise non-plain class default.
+	 *
+	 * IS_UNDEF is an uninitialized typed property and is permitted as an
+	 * unrelated slot: it has no constructor or destructor side effect.
+	 */
+	for (uint32_t i = 0; i < (uint32_t) ce->default_properties_count; ++i) {
+		switch (Z_TYPE(defaults[i])) {
+			case IS_UNDEF:
+			case IS_NULL:
+			case IS_FALSE:
+			case IS_TRUE:
+			case IS_LONG:
+			case IS_DOUBLE:
+				break;
+			default:
+				return false;
+		}
 	}
 
 	ZVAL_COPY_VALUE(result, initial);
