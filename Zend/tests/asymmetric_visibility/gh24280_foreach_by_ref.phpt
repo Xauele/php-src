@@ -19,6 +19,15 @@ class PrivateSetter {
     }
 }
 
+class PrivateSetterChild extends PrivateSetter {
+    public function updateFromChild(): void {
+        foreach ($this as &$value) {
+            $value = 'child';
+        }
+        unset($value);
+    }
+}
+
 class ProtectedSetter {
     public protected(set) int $value = 10;
 }
@@ -78,6 +87,16 @@ var_dump($existingReference->value);
 $existingReference->updateInside();
 var_dump($existingReference->value);
 
+$privateChild = new PrivateSetterChild();
+echo "private child: ";
+try {
+    $privateChild->updateFromChild();
+    echo "accepted\n";
+} catch (Error $error) {
+    echo $error->getMessage(), "\n";
+}
+var_dump($privateChild->value);
+
 $protected = new ProtectedSetterChild();
 echo "protected outside: ";
 acquireReference($protected);
@@ -102,6 +121,8 @@ string(6) "inside"
 existing reference outside: Cannot indirectly modify private(set) property PrivateSetter::$value from global scope
 string(8) "original"
 string(6) "inside"
+private child: Cannot indirectly modify private(set) property PrivateSetter::$value from scope PrivateSetterChild
+string(8) "original"
 protected outside: Cannot indirectly modify protected(set) property ProtectedSetter::$value from global scope
 int(10)
 int(11)
