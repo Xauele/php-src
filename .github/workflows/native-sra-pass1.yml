@@ -6,6 +6,7 @@ on:
       - Zend/Optimizer/pass1.c
       - Zend/benchmarks/native_sra_pass1_probe.php
       - Zend/tests/optimizer/native_sra_pass1_*
+      - scripts/ci/native_sra_compare.py
       - .github/workflows/native-sra-pass1.yml
   workflow_dispatch:
 permissions:
@@ -75,6 +76,21 @@ jobs:
         run: |
           sapi/cli/php -v
           sapi/cli/php -n -m
+      - name: Export identically configured release binary
+        if: matrix.name == 'baseline-release' || matrix.name == 'candidate-release'
+        run: |
+          mkdir -p native-proof
+          cp sapi/cli/php native-proof/php
+          chmod +x native-proof/php
+          sha256sum native-proof/php
+      - name: Upload release binary for same-runner comparison
+        if: matrix.name == 'baseline-release' || matrix.name == 'candidate-release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-sra-bin-${{ matrix.name }}
+          path: native-proof/php
+          if-no-files-found: error
+          retention-days: 7
       - name: PHPT semantic regression
         run: |
           make TEST_PHP_ARGS=-j2 TESTS=Zend/tests/optimizer/native_sra_pass1_prototype.phpt test
@@ -157,4 +173,43 @@ jobs:
         with:
           name: native-sra-pass1-${{ matrix.name }}
           path: native-proof/
+          if-no-files-found: warn
+
+  controlled-abba-benchmark:
+    name: Paired ABBA same-host performance evidence
+    needs: build-and-verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v6
+      - name: Download unmodified and experimental PHP builds
+        uses: actions/download-artifact@v4
+        with:
+          name: native-sra-bin-baseline-release
+          path: native-sra-builds/baseline
+      - name: Download native candidate binary
+        uses: actions/download-artifact@v4
+        with:
+          name: native-sra-bin-candidate-release
+          path: native-sra-builds/candidate
+      - name: Compare on identical runner with alternating order
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x native-sra-builds/baseline/php native-sra-builds/candidate/php
+          git rev-parse HEAD
+          uname -a
+          lscpu | head -n 18
+          python3 scripts/ci/native_sra_compare.py \
+            --baseline native-sra-builds/baseline/php \
+            --candidate native-sra-builds/candidate/php \
+            --iterations 500000 \
+            --pairs 12 \
+            --output native-proof/paired_abba.json
+      - name: Preserve controlled comparison
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-sra-controlled-abba
+          path: native-proof/paired_abba.json
           if-no-files-found: warn
