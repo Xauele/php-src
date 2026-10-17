@@ -160,7 +160,7 @@ jobs:
       - name: Verify actual scalar forwarding in dynamic int methods
         shell: bash
         env:
-          SRA_ENABLED: \${{ matrix.sra }}
+          SRA_ENABLED: ${{ matrix.sra }}
         run: |
           set -euo pipefail
           mkdir -p native-proof
@@ -183,7 +183,8 @@ jobs:
               assert optimized, name
               return bool(re.search(r'(?m)^\s*\d+\s+.*\bNEW\b', optimized[-1]))
           enabled = os.environ['SRA_ON'] == 'true'
-          assert has_new('SraDynCandidate::identity') != enabled
+          actual = has_new('SraDynCandidate::identity')
+          assert actual != enabled, f'candidate NEW present={actual}, SRA_ENABLED={enabled}'
           for name in ('SraDynConstructorExcluded::identity',
                        'SraDynStringExcluded::identity',
                        'SraDynRefExcluded::identity'):
