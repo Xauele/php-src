@@ -108,7 +108,7 @@ jobs:
           retention-days: 7
       - name: PHPT semantic regression
         run: |
-          make TEST_PHP_ARGS=-j2 TESTS=Zend/tests/optimizer/native_sra_pass1_prototype.phpt test
+          make TEST_PHP_ARGS=-j2 TESTS="Zend/tests/optimizer/native_sra_pass1_prototype.phpt Zend/tests/optimizer/native_sra_pass1_guards.phpt" test
       - name: Verify optimized opcodes for 12 safe and unsafe variants
         shell: bash
         env:
@@ -127,6 +127,33 @@ jobs:
             --log native-proof/opcodes.log \
             --enabled "$SRA_ENABLED" \
             --output native-proof/opcode-verification.json
+      - name: Execute real candidates under VM and JIT modes
+        if: matrix.sra
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p native-proof
+          for mode in off tracing function; do
+            if [ "$mode" = off ]; then
+              buffer=0
+            else
+              buffer=64M
+            fi
+            sapi/cli/php -n -d opcache.enable_cli=1 \
+              -d opcache.file_update_protection=0 \
+              -d opcache.jit_hot_func=2 \
+              -d opcache.jit_hot_loop=16 \
+              -d opcache.jit_buffer_size="$buffer" \
+              -d opcache.jit="$mode" \
+              Zend/tests/optimizer/native_sra_pass1_inspect.php \
+              > "native-proof/candidate-$mode.out"
+            grep -qx 'NATIVE_SRA_SEMANTICS_OK' "native-proof/candidate-$mode.out"
+            sapi/cli/php -n -d opcache.enable_cli=1 \
+              -d opcache.jit_buffer_size="$buffer" -d opcache.jit="$mode" \
+              -r '$status=opcache_get_status(false); exit((int) ($status["jit"]["on"] ?? false) !== (int) ($argv[1] !== "off"));' "$mode"
+          done
+          diff -u native-proof/candidate-off.out native-proof/candidate-tracing.out
+          diff -u native-proof/candidate-off.out native-proof/candidate-function.out
       - name: Benchmark same codepath with and without C macro
         run: |
           sapi/cli/php -n \

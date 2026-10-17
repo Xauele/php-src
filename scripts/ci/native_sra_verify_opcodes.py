@@ -17,6 +17,7 @@ FOLDABLE = [
     "SraBooleanFoldable::value",
     "SraNullFoldable::value",
     "SraDoubleFoldable::value",
+    "SraOtherPlainFoldable::value",
 ]
 EXCLUDED = [
     "SraExcluded::value",  # constructor with observable side effects
@@ -27,7 +28,13 @@ EXCLUDED = [
     "SraClassAttrExcluded::value",  # class attribute
     "SraPropertyAttrExcluded::value",  # property attribute
     "SraAsymmetricExcluded::value",  # public private(set), not ordinary public
-    "SraStringExcluded::value",  # non-scalar default with refcounting
+    "SraStringExcluded::value",  # own non-scalar default
+    "SraExtraStringExcluded::value",  # unrelated refcounted default
+    "SraExtraArrayExcluded::value",  # unrelated refcounted default
+    "SraArgumentsExcluded::value",  # argument evaluation and nonzero call
+    "SraEmptyUnpackExcluded::value",  # SEND_UNPACK must remain
+    "SraStaticBindingExcluded::value",  # different class fetch semantics
+    "SraUninitializedSelectedExcluded::value",  # throws on property read  # non-scalar default with refcounting
 ]
 
 

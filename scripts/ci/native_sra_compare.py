@@ -149,7 +149,7 @@ def main() -> int:
     if ci[0] <= 1.10:
         print("FAIL: insufficient evidence of a >=10% real speedup.", file=sys.stderr)
         return 1
-    if not (0.75 < report["geometric_mean_control_ratio"] < 1.33):
+    if not (0.93 < control_ci[0] and control_ci[1] < 1.07):
         print("FAIL: negative control diverged; timing is confounded.", file=sys.stderr)
         return 2
     print("PASS: positive improvement and stable constructor control on one runner.")

@@ -101,6 +101,56 @@ final class SraStringExcluded
     public static function value(): string { return (new self())->value; }
 }
 
+
+final class SraOtherPlainFoldable
+{
+    public int $value = 97;
+    public bool $switch = false;
+    public ?int $nullable = null;
+    public int $uninitialized;
+    public static function value(): int { return (new self())->value; }
+}
+
+final class SraExtraStringExcluded
+{
+    public int $value = 42;
+    public string $unrelated = 'reference-counted';
+    public static function value(): int { return (new self())->value; }
+}
+
+final class SraExtraArrayExcluded
+{
+    public int $value = 42;
+    public array $unrelated = [1, 2, 3];
+    public static function value(): int { return (new self())->value; }
+}
+
+final class SraArgumentsExcluded
+{
+    public static int $evaluations = 0;
+    public int $value = 42;
+    private static function argument(): int { ++self::$evaluations; return 17; }
+    public static function value(): int { return (new self(self::argument()))->value; }
+}
+
+final class SraEmptyUnpackExcluded
+{
+    public int $value = 42;
+    public static function value(): int { return (new self(...[]))->value; }
+}
+
+final class SraStaticBindingExcluded
+{
+    public int $value = 42;
+    public static function value(): int { return (new static())->value; }
+}
+
+final class SraUninitializedSelectedExcluded
+{
+    public int $value;
+    public static function value(): int { return (new self())->value; }
+}
+
 $actual = [
     SraFoldable::value(),
     SraBooleanFoldable::value(),
@@ -115,15 +165,41 @@ $actual = [
     SraPropertyAttrExcluded::value(),
     SraAsymmetricExcluded::value(),
     SraStringExcluded::value(),
+    SraOtherPlainFoldable::value(),
+    SraExtraStringExcluded::value(),
+    SraExtraArrayExcluded::value(),
+    SraArgumentsExcluded::value(),
+    SraEmptyUnpackExcluded::value(),
+    SraStaticBindingExcluded::value(),
     SraExcluded::$constructs,
     SraDestructorExcluded::$destructions,
     SraHookExcluded::$reads,
+    SraArgumentsExcluded::$evaluations,
 ];
 
 $expected = [
-    42, true, null, 2.5, 42, 42, 42, 42, 42, 42, 42, 42, '42', 1, 1, 1,
+    42, true, null, 2.5, 42, 42, 42, 42, 42, 42, 42, 42, '42',
+    97, 42, 42, 42, 42, 42, 1, 1, 1, 1,
 ];
 if ($actual !== $expected) {
     throw new RuntimeException('Unexpected runtime semantics: ' . var_export($actual, true));
+}
+$threw = false;
+try {
+    SraUninitializedSelectedExcluded::value();
+} catch (Error $e) {
+    $threw = true;
+}
+if (!$threw) {
+    throw new RuntimeException('Reading an uninitialized typed property must throw');
+}
+
+/* Exercise the candidate repeatedly so tracing JIT can observe the hot path. */
+for ($i = 0; $i < 2048; ++$i) {
+    if (SraOtherPlainFoldable::value() !== 97
+        || SraExtraStringExcluded::value() !== 42
+        || SraExtraArrayExcluded::value() !== 42) {
+        throw new RuntimeException('Inconsistent behavior under repeated execution');
+    }
 }
 echo "NATIVE_SRA_SEMANTICS_OK\n";
