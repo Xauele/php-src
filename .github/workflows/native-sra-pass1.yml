@@ -1,12 +1,19 @@
 name: Experimental native SRA pass1
 on:
   push:
-    branches: [experiment/native-sra-pass1-prototype]
+    branches: [experiment/native-sra-pass1-prototype, experiment/native-sra-proof-v2]
     paths:
       - Zend/Optimizer/pass1.c
       - Zend/benchmarks/native_sra_pass1_probe.php
       - Zend/tests/optimizer/native_sra_pass1_*
       - scripts/ci/native_sra_compare.py
+      - scripts/ci/native_sra_verify_opcodes.py
+      - docs/performance/native-sra-proof-v2.md
+      - .github/workflows/native-sra-pass1.yml
+  pull_request:
+    paths:
+      - Zend/Optimizer/pass1.c
+      - Zend/tests/optimizer/native_sra_pass1_*
       - scripts/ci/native_sra_verify_opcodes.py
       - .github/workflows/native-sra-pass1.yml
   workflow_dispatch:
