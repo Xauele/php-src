@@ -58,6 +58,11 @@ jobs:
           sapi/cli/php -v
           sapi/cli/php -n -m
 
+      - name: Run upstream Zend JIT regression suite
+        if: matrix.name == 'release-nts'
+        run: |
+          make TEST_PHP_ARGS=-j4 TESTS=ext/opcache/tests/jit/ test
+
       - name: Run semantic regression baselines
         run: |
           make TEST_PHP_ARGS=-j2 \
