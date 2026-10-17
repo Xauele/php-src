@@ -64,3 +64,12 @@ reasoning and deoptimization snapshots.
 Do NOT ship as general SRA. First prove that the effects above are
 unobservable or acceptable, profile framework workloads, and split the
 minimal C code and PHPTs into a small reviewable upstream patch.
+
+## Deliberate mutation killing
+
+The candidate Release CI temporarily compiles three intentionally broken C
+variants: missing constructor side-effect guard, missing unrelated-property
+default checks, and missing property-visibility check. The opcode checker
+must reject each mutant, and the constructor mutant must also violate the
+runtime oracle. Mutant binaries are never published. This is not a full
+mutation campaign but directly tests three claimed safety conditions.

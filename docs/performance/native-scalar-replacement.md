@@ -1,8 +1,10 @@
 # Native scalar replacement (research prototype)
 
-**Status:** Benchmark and semantic regression baselines only. **No native
-optimization has been implemented or validated on php-src `master` yet.**
-This document is not an accepted PHP RFC and makes no release commitment.
+**Status:** This research branch contains an experimental native C optimizer
+peephole for folding a constructorless temporary object's scalar default.
+It is NOT general Scalar Replacement of Aggregates (SRA), is not present on
+fork `master`, and is not upstream. See `docs/performance/native-sra-proof-v2.md`.
+This is not an accepted PHP RFC and carries no release commitment.
 
 ## Hypothesis
 

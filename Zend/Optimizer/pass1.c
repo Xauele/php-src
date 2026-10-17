@@ -79,10 +79,10 @@ static bool zend_optimizer_fold_temporary_self_property(
 		return false;
 	}
 
-	/* The VM skips the DO_FCALL after constructorless NEW only when
-	 * extended_value == 0, the following opcode is DO_FCALL, and the
-	 * call's result is unused. Match that exact zero-argument shape;
-	 * don't silently remove a possible dummy call frame. */
+	/* The VM skips DO_FCALL after a constructorless NEW when
+	 * extended_value is zero and the next opcode is DO_FCALL.
+	 * We additionally require its result to be unused to exclude any
+	 * observable dummy-call result from this peephole. */
 	zend_op *new_op = fetch - 2;
 	zend_op *call_op = fetch - 1;
 	if (new_op->opcode != ZEND_NEW

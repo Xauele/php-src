@@ -8,6 +8,7 @@ on:
       - Zend/tests/optimizer/native_sra_pass1_*
       - scripts/ci/native_sra_compare.py
       - scripts/ci/native_sra_verify_opcodes.py
+      - scripts/ci/native_sra_mutate.py
       - docs/performance/native-sra-proof-v2.md
       - .github/workflows/native-sra-pass1.yml
   pull_request:
@@ -211,6 +212,7 @@ jobs:
           done
           cmp native-proof/file-cache-1.json native-proof/file-cache-2.json
           cmp native-proof/file-cache-2.json native-proof/file-cache-3.json
+          test "$(find native-proof/file-cache -type f -name '*.bin' | wc -l)" -gt 0
           python3 - <<'PY'
           import json
           from pathlib import Path
@@ -276,6 +278,50 @@ jobs:
               assert o['opcache_enabled'], (file, o)
           print('Validated 20 HTTP requests in one persistent CLI-server process')
           PY
+
+      - name: Kill unsafe C mutants with real PHP bytecode checks
+        if: matrix.name == 'candidate-release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p native-proof/mutations
+          for kind in constructor unrelated-default visibility; do
+            git restore -- Zend/Optimizer/pass1.c
+            python3 scripts/ci/native_sra_mutate.py "$kind"
+            make -j4 > "native-proof/mutations/$kind-build.log" 2>&1
+            set +e
+            sapi/cli/php -n -d opcache.enable_cli=1 \
+              -d opcache.file_update_protection=0 \
+              -d opcache.opt_debug_level=131072 \
+              Zend/tests/optimizer/native_sra_pass1_inspect.php \
+              > "native-proof/mutations/$kind-output.txt" \
+              2> "native-proof/mutations/$kind-opcodes.log"
+            runtime_rc=$?
+            python3 scripts/ci/native_sra_verify_opcodes.py \
+              --log "native-proof/mutations/$kind-opcodes.log" \
+              --enabled true \
+              --output "native-proof/mutations/$kind-verification.json" \
+              > "native-proof/mutations/$kind-checker.txt" \
+              2> "native-proof/mutations/$kind-checker.err"
+            checker_rc=$?
+            set -e
+            test "$checker_rc" -ne 0
+            case "$kind" in
+              constructor)
+                grep -Fq "SraExcluded::value" "native-proof/mutations/$kind-checker.err"
+                test "$runtime_rc" -ne 0
+                ;;
+              unrelated-default)
+                grep -Fq "SraExtraStringExcluded::value" "native-proof/mutations/$kind-checker.err"
+                ;;
+              visibility)
+                grep -Fq "SraAsymmetricExcluded::value" "native-proof/mutations/$kind-checker.err"
+                ;;
+            esac
+            echo "KILLED $kind" | tee -a native-proof/mutations/summary.txt
+          done
+          git restore -- Zend/Optimizer/pass1.c
+          test "$(grep -c '^KILLED ' native-proof/mutations/summary.txt)" -eq 3
 
       - name: Preserve evidence artifacts
         if: always()

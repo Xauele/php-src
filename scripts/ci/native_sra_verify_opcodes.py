@@ -34,7 +34,7 @@ EXCLUDED = [
     "SraArgumentsExcluded::value",  # argument evaluation and nonzero call
     "SraEmptyUnpackExcluded::value",  # SEND_UNPACK must remain
     "SraStaticBindingExcluded::value",  # different class fetch semantics
-    "SraUninitializedSelectedExcluded::value",  # throws on property read  # non-scalar default with refcounting
+    "SraUninitializedSelectedExcluded::value",  # throws on property read
 ]
 
 
