@@ -89,6 +89,7 @@ static bool zend_optimizer_fold_temporary_self_property(
 		return false;
 	}
 
+	/* All handlers must be canonical: custom read_property/get_gc/free_obj are observable. */
 	const zend_class_entry *ce = op_array->scope;
 	const uint32_t required_flags =
 		ZEND_ACC_FINAL | ZEND_ACC_LINKED | ZEND_ACC_CONSTANTS_UPDATED;
@@ -97,9 +98,7 @@ static bool zend_optimizer_fold_temporary_self_property(
 	 || (ce->ce_flags & required_flags) != required_flags
 	 || ce->parent
 	 || ce->create_object
-	 || !ce->default_object_handlers
-	 || ce->default_object_handlers->get_constructor != zend_std_get_constructor
-	 || ce->default_object_handlers->dtor_obj != zend_objects_destroy_object
+	 || ce->default_object_handlers != &std_object_handlers
 	 || ce->constructor || ce->destructor
 	 || ce->__get || ce->__set || ce->__isset || ce->__unset
 	 || ce->num_hooked_props
