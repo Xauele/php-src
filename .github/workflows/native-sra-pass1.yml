@@ -7,6 +7,7 @@ on:
       - Zend/benchmarks/native_sra_pass1_probe.php
       - Zend/tests/optimizer/native_sra_pass1_*
       - scripts/ci/native_sra_compare.py
+      - scripts/ci/native_sra_verify_opcodes.py
       - .github/workflows/native-sra-pass1.yml
   workflow_dispatch:
 permissions:
@@ -38,6 +39,12 @@ jobs:
             cflags: "-g -O0 -DZEND_SRA_EXPERIMENTAL=1"
             debug: true
             zts: true
+          - name: candidate-asan-ubsan
+            sra: true
+            cflags: "-g -O1 -fno-omit-frame-pointer -fsanitize=address,undefined -DZEND_TRACK_ARENA_ALLOC -DZEND_SRA_EXPERIMENTAL=1"
+            ldflags: "-fsanitize=address,undefined"
+            debug: true
+            zts: true
     steps:
       - uses: actions/checkout@v6
       - name: Install dependencies and fingerprint platform
@@ -53,12 +60,13 @@ jobs:
         shell: bash
         env:
           BUILD_CFLAGS: ${{ matrix.cflags }}
+          BUILD_LDFLAGS: ${{ matrix.ldflags || '' }}
           DEBUG_BUILD: ${{ matrix.debug }}
           ZTS_BUILD: ${{ matrix.zts }}
         run: |
           set -euo pipefail
           ./buildconf --force
-          set -- --disable-all --enable-cli --disable-cgi --enable-filter --enable-opcache
+          set -- --disable-all --enable-cli --disable-cgi --enable-filter
           if [[ "$DEBUG_BUILD" == "true" ]]; then
             set -- "$@" --enable-debug
           else
@@ -69,7 +77,7 @@ jobs:
           else
             set -- "$@" --disable-zts
           fi
-          CFLAGS="$BUILD_CFLAGS" ./configure "$@"
+          CFLAGS="$BUILD_CFLAGS" LDFLAGS="$BUILD_LDFLAGS" ./configure "$@"
       - name: Compile PHP
         run: make -j4
       - name: Build identity
@@ -94,7 +102,7 @@ jobs:
       - name: PHPT semantic regression
         run: |
           make TEST_PHP_ARGS=-j2 TESTS=Zend/tests/optimizer/native_sra_pass1_prototype.phpt test
-      - name: Verify native opcode elimination and negative control
+      - name: Verify optimized opcodes for 12 safe and unsafe variants
         shell: bash
         env:
           SRA_ENABLED: ${{ matrix.sra }}
@@ -107,27 +115,11 @@ jobs:
             -d opcache.opt_debug_level=131072 \
             Zend/tests/optimizer/native_sra_pass1_inspect.php \
             > native-proof/inspect.out 2> native-proof/opcodes.log
-          grep -q 'int(42)' native-proof/inspect.out
-          python3 - <<'PY'
-          import os
-          import re
-          from pathlib import Path
-          log = Path('native-proof/opcodes.log').read_text()
-          def has_new(label):
-              marker = label + ':'
-              assert marker in log, f'No optimized bytecode for {label}'
-              chunk = log.split(marker, 1)[1].split('\n\n', 1)[0]
-              return bool(re.search(r'\bNEW\b', chunk)), chunk
-          enabled = os.environ['SRA_ENABLED'] == 'true'
-          candidate_has_new, candidate_ops = has_new('SraFoldable::value')
-          excluded_has_new, excluded_ops = has_new('SraExcluded::value')
-          assert candidate_has_new != enabled, candidate_ops
-          assert excluded_has_new, excluded_ops
-          print('Experimental folding enabled:', enabled)
-          print('Foldable NEW present:', candidate_has_new)
-          print('Constructor-control NEW present:', excluded_has_new)
-          print('Optimized code:', candidate_ops)
-          PY
+          grep -qx 'NATIVE_SRA_SEMANTICS_OK' native-proof/inspect.out
+          python3 scripts/ci/native_sra_verify_opcodes.py \
+            --log native-proof/opcodes.log \
+            --enabled "$SRA_ENABLED" \
+            --output native-proof/opcode-verification.json
       - name: Benchmark same codepath with and without C macro
         run: |
           sapi/cli/php -n \
