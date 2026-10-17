@@ -1,0 +1,38 @@
+name: GH-24280 sync generated Zend VM
+
+on:
+  push:
+    branches: [fix/gh-24280-foreach-asymmetric-visibility]
+    paths:
+      - Zend/zend_vm_def.h
+      - .github/workflows/gh24280-sync-generated-vm.yml
+
+permissions:
+  contents: write
+
+jobs:
+  regenerate:
+    if: github.repository == 'Xauele/php-src'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout actual feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/gh-24280-foreach-asymmetric-visibility
+          persist-credentials: true
+      - name: Generate canonical Zend VM artifacts
+        run: |
+          php -v
+          php Zend/zend_vm_gen.php
+          git diff --stat -- Zend/zend_vm_execute.h Zend/zend_vm_opcodes.c
+          grep -Fq 'An existing reference must not bypass setter visibility.' Zend/zend_vm_execute.h
+      - name: Commit generated files to fork branch
+        run: |
+          git add Zend/zend_vm_execute.h Zend/zend_vm_opcodes.c
+          if git diff --cached --quiet; then
+            echo 'Generated Zend VM files are already current.'
+            exit 0
+          fi
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'build: regenerate Zend VM executor for GH-24280'
+          git push origin HEAD:fix/gh-24280-foreach-asymmetric-visibility
