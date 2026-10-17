@@ -72,7 +72,7 @@ static bool zend_optimizer_fold_temporary_self_property(
 		zend_op_array *op_array, zend_op *fetch, zval *result)
 {
 	if (fetch - op_array->opcodes < 2
-	 || fetch->op1_type != IS_VAR
+	 || (fetch->op1_type != IS_VAR && fetch->op1_type != IS_TMP_VAR)
 	 || fetch->op2_type != IS_CONST
 	 || Z_TYPE(ZEND_OP2_LITERAL(fetch)) != IS_STRING) {
 		return false;
@@ -83,7 +83,7 @@ static bool zend_optimizer_fold_temporary_self_property(
 	if (new_op->opcode != ZEND_NEW
 	 || new_op->op1_type != IS_UNUSED
 	 || (new_op->op1.num & ZEND_FETCH_CLASS_MASK) != ZEND_FETCH_CLASS_SELF
-	 || new_op->result_type != IS_VAR
+	 || new_op->result_type != fetch->op1_type
 	 || new_op->result.var != fetch->op1.var
 	 || call_op->opcode != ZEND_DO_FCALL) {
 		return false;
