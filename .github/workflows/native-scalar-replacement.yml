@@ -1,0 +1,104 @@
+name: Native scalar replacement baseline
+
+on:
+  push:
+    branches:
+      - experiment/jit-scalar-replacement
+    paths:
+      - Zend/benchmarks/native_scalar_replacement.php
+      - Zend/tests/optimizer/native_scalar_replacement_*.phpt
+      - docs/performance/native-scalar-replacement.md
+      - .github/workflows/native-scalar-replacement.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  baseline:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: release-nts
+            configure_flags: --disable-debug --disable-zts
+          - name: debug-zts
+            configure_flags: --enable-debug --enable-zts
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PHP build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential autoconf bison re2c pkg-config \
+            libxml2-dev libsqlite3-dev
+
+      - name: Configure PHP
+        run: |
+          ./buildconf --force
+          ./configure \
+            --disable-all \
+            --enable-cli \
+            --disable-cgi \
+            --enable-filter \
+            --enable-opcache \
+            ${{ matrix.configure_flags }}
+
+      - name: Build php-src
+        run: make -j4
+
+      - name: PHP build information
+        run: |
+          sapi/cli/php -v
+          sapi/cli/php -n -m
+
+      - name: Run semantic regression baselines
+        run: |
+          make TEST_PHP_ARGS=-j2 \
+            TESTS="Zend/tests/optimizer/native_scalar_replacement_001.phpt Zend/tests/optimizer/native_scalar_replacement_002.phpt" \
+            test
+
+      - name: Run VM and native JIT benchmarks
+        run: |
+          mkdir -p baseline-results
+          for mode in off tracing function; do
+            if [ "$mode" = off ]; then
+              buffer=0
+            else
+              buffer=128M
+            fi
+            sapi/cli/php -n \
+              -d opcache.enable_cli=1 \
+              -d opcache.file_update_protection=0 \
+              -d opcache.jit_buffer_size="$buffer" \
+              -d opcache.jit="$mode" \
+              Zend/benchmarks/native_scalar_replacement.php 500000 \
+              > "baseline-results/$mode.json"
+            cat "baseline-results/$mode.json"
+            MODE="$mode" python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          mode = os.environ["MODE"]
+          data = json.loads(Path(f"baseline-results/{mode}.json").read_text())
+          assert data["iterations"] == 500_000
+          assert data["checksum"] == 374_999_250_000
+          assert data["jit_enabled"] == (mode != "off"), data
+          for measurement in data["measurements"].values():
+              assert len(measurement["samples_ms"]) == 7
+              assert measurement["median_ms"] > 0
+          PY
+          done
+
+      - name: Preserve benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-sra-${{ matrix.name }}
+          path: baseline-results/*.json
+          if-no-files-found: ignore
