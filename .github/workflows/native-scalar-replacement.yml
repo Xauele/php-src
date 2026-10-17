@@ -7,6 +7,7 @@ on:
     paths:
       - Zend/benchmarks/native_scalar_replacement.php
       - Zend/tests/optimizer/native_scalar_replacement_*.phpt
+      - Zend/tests/optimizer/native_scalar_replacement_oracle.php
       - docs/performance/native-scalar-replacement.md
       - .github/workflows/native-scalar-replacement.yml
   workflow_dispatch:
@@ -95,10 +96,53 @@ jobs:
           PY
           done
 
+      - name: Differential semantic oracle (JIT off / tracing / function)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p oracle-results
+          for mode in off tracing function; do
+            if [ "$mode" = off ]; then
+              buffer=0
+            else
+              buffer=128M
+            fi
+            sapi/cli/php -n \
+              -d opcache.enable_cli=1 \
+              -d opcache.file_update_protection=0 \
+              -d opcache.jit_hot_loop=16 \
+              -d opcache.jit_hot_func=2 \
+              -d opcache.jit_buffer_size="$buffer" \
+              -d opcache.jit="$mode" \
+              Zend/tests/optimizer/native_scalar_replacement_oracle.php \
+              > "oracle-results/$mode.json"
+            test -s "oracle-results/$mode.json"
+          done
+          diff -u oracle-results/off.json oracle-results/tracing.json
+          diff -u oracle-results/off.json oracle-results/function.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          expected = {
+              'simple', 'reference', 'identity', 'hooked', 'lifecycle',
+              'uninitialized', 'readonly', 'magic', 'reflection',
+              'weak_reference', 'weak_map', 'clone', 'closure_escape',
+              'exceptions', 'polymorphic', 'polymorphic_hook_counts',
+              'enumeration',
+          }
+          result = json.loads(Path('oracle-results/off.json').read_text())
+          assert set(result) == expected, (set(result) - expected, expected - set(result))
+          print(f'Semantic checks: {len(result)} x 3 JIT modes = {len(result) * 3}')
+          PY
+          sha256sum oracle-results/*.json
+
       - name: Preserve benchmark evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: native-sra-${{ matrix.name }}
-          path: baseline-results/*.json
+          path: |
+            baseline-results/*.json
+            oracle-results/*.json
           if-no-files-found: ignore
