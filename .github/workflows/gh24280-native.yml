@@ -38,6 +38,7 @@ jobs:
         working-directory: baseline
         run: |
           ./buildconf --force
+          php Zend/zend_vm_gen.php
           ./configure --disable-all --enable-cli --enable-debug
           make -j2
       - name: Assert four exact RED counterexamples
@@ -96,6 +97,11 @@ jobs:
       - name: Build native Zend Engine (debug)
         run: |
           ./buildconf --force
+          # Never rely on checkout timestamps to decide whether to regenerate VM.
+          php Zend/zend_vm_gen.php
+          grep -Fq 'An existing reference must not bypass setter visibility.' Zend/zend_vm_execute.h
+          # Tracked generated artifacts must match the source exactly.
+          git diff --exit-code -- Zend/zend_vm_execute.h Zend/zend_vm_opcodes.c
           ZTS_FLAG=''
           if [ '${{ matrix.build }}' = 'debug-zts' ]; then ZTS_FLAG='--enable-zts'; fi
           ./configure --disable-all --enable-cli --enable-debug --enable-opcache $ZTS_FLAG
