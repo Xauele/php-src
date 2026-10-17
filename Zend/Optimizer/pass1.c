@@ -58,7 +58,7 @@ static void replace_by_const_or_qm_assign(zend_op_array *op_array, zend_op *opli
 
 #ifdef ZEND_SRA_EXPERIMENTAL
 /*
- * Deliberately tiny, opt-in scalar replacement prototype.
+ * Deliberately tiny, opt-in constant-default folding prototype.
  *
  * Only fold a temporary (new self())->publicScalarProperty in a final,
  * already-linked class with known scalar defaults and no observable object
@@ -103,16 +103,20 @@ static bool zend_optimizer_fold_temporary_self_property(
 	 || ce->__get || ce->__set || ce->__isset || ce->__unset
 	 || ce->num_hooked_props
 	 || ce->attributes
+	 || (ce->ce_flags & ZEND_ACC_DEPRECATED)
 	 || ce->default_properties_count <= 0
 	 || !ce->default_properties_table) {
 		return false;
 	}
 
+	/* Property flag bits overlap with method/class flags. In particular, */
+	/* ZEND_ACC_DEPRECATED is NOT a property flag: bit 11 means protected(set). */
+	/* Exactly public excludes asymmetric visibility and other modifiers. */
 	zend_property_info *prop_info = zend_hash_find_ptr(
 		&ce->properties_info, Z_STR(ZEND_OP2_LITERAL(fetch)));
 	if (!prop_info
 	 || prop_info->ce != ce
-	 || (prop_info->flags & (ZEND_ACC_PPP_MASK | ZEND_ACC_STATIC | ZEND_ACC_DEPRECATED)) != ZEND_ACC_PUBLIC
+	 || prop_info->flags != ZEND_ACC_PUBLIC
 	 || prop_info->attributes
 	 || prop_info->hooks
 	 || prop_info->offset < OBJ_PROP_TO_OFFSET(0)) {
