@@ -193,6 +193,90 @@ jobs:
             diff -u "native-proof/$fixture-off.json" "native-proof/$fixture-function.json"
           done
           sha256sum native-proof/oracle-*.json native-proof/fuzz-*.json
+      - name: Validate persistent OPcache file cache across CLI processes
+        if: matrix.name == 'candidate-release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p native-proof/file-cache
+          for n in 1 2 3; do
+            sapi/cli/php -n \
+              -d opcache.enable_cli=1 \
+              -d opcache.file_update_protection=0 \
+              -d opcache.file_cache="$PWD/native-proof/file-cache" \
+              -d opcache.file_cache_only=1 \
+              -d opcache.jit=off \
+              Zend/tests/optimizer/native_sra_pass1_cache_request.php \
+              > "native-proof/file-cache-$n.json"
+          done
+          cmp native-proof/file-cache-1.json native-proof/file-cache-2.json
+          cmp native-proof/file-cache-2.json native-proof/file-cache-3.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          o = json.loads(Path('native-proof/file-cache-3.json').read_text())
+          assert o['folded'] == 42 and o['constructor_calls'] == 1, o
+          PY
+
+      - name: Validate startup preloading with the native optimizer
+        if: matrix.name == 'candidate-release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sapi/cli/php -n -d opcache.enable_cli=1 \
+            -d opcache.file_update_protection=0 \
+            -d opcache.preload="$PWD/Zend/tests/optimizer/native_sra_pass1_cache_preload.inc" \
+            -d opcache.jit=off \
+            Zend/tests/optimizer/native_sra_pass1_cache_request.php \
+            > native-proof/preloaded.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path('native-proof/preloaded.json').read_text())
+          assert result['folded'] == 42 and result['constructor_calls'] == 1, result
+          PY
+
+      - name: Validate multiple independent HTTP requests with OPcache
+        if: matrix.name == 'candidate-release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sapi/cli/php -n \
+            -d opcache.enable=1 \
+            -d opcache.enable_cli=1 \
+            -d opcache.file_update_protection=0 \
+            -d opcache.validate_timestamps=0 \
+            -d opcache.jit_buffer_size=0 \
+            -S 127.0.0.1:19873 -t Zend/tests/optimizer \
+            > native-proof/server.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          ready=0
+          for attempt in $(seq 1 40); do
+            if curl -fsS 'http://127.0.0.1:19873/native_sra_pass1_cache_request.php' \
+                 > native-proof/http-01.json; then
+              ready=1
+              break
+            fi
+            sleep 0.2
+          done
+          test "$ready" = 1
+          for n in $(seq -w 2 20); do
+            curl -fsS 'http://127.0.0.1:19873/native_sra_pass1_cache_request.php' \
+              > "native-proof/http-$n.json"
+          done
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          for file in sorted(Path('native-proof').glob('http-*.json')):
+              o = json.loads(file.read_text())
+              assert o['sapi'] == 'cli-server', (file, o)
+              assert o['folded'] == 42, (file, o)
+              assert o['constructor_calls'] == 1, (file, o)
+              assert o['opcache_enabled'], (file, o)
+          print('Validated 20 HTTP requests in one persistent CLI-server process')
+          PY
+
       - name: Preserve evidence artifacts
         if: always()
         uses: actions/upload-artifact@v4
