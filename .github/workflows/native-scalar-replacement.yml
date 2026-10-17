@@ -8,6 +8,7 @@ on:
       - Zend/benchmarks/native_scalar_replacement.php
       - Zend/tests/optimizer/native_scalar_replacement_*.phpt
       - Zend/tests/optimizer/native_scalar_replacement_oracle.php
+      - Zend/tests/optimizer/native_scalar_replacement_fuzz.php
       - docs/performance/native-scalar-replacement.md
       - .github/workflows/native-scalar-replacement.yml
   workflow_dispatch:
@@ -137,6 +138,69 @@ jobs:
           PY
           sha256sum oracle-results/*.json
 
+      - name: Seeded metamorphic fuzz (16 mutations x 4 seeds)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p fuzz-results
+          for mode in off tracing function; do
+            if [ "$mode" = off ]; then
+              buffer=0
+            else
+              buffer=128M
+            fi
+            sapi/cli/php -n \
+              -d opcache.enable_cli=1 \
+              -d opcache.file_update_protection=0 \
+              -d opcache.jit_hot_loop=16 \
+              -d opcache.jit_hot_func=2 \
+              -d opcache.jit_buffer_size="$buffer" \
+              -d opcache.jit="$mode" \
+              Zend/tests/optimizer/native_scalar_replacement_fuzz.php \
+              > "fuzz-results/$mode.json"
+            test -s "fuzz-results/$mode.json"
+          done
+          diff -u fuzz-results/off.json fuzz-results/tracing.json
+          diff -u fuzz-results/off.json fuzz-results/function.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          # Independent expected values from the known-good PHP 8.4.24 VM.
+          expected = {
+              '1': (9015514, 2080),
+              '7': (8927881, 2040),
+              '137': (8968864, 2081),
+              '31337': (8922245, 2053),
+          }
+          output = json.loads(Path('fuzz-results/off.json').read_text())
+          assert set(output) == set(expected), output
+          for seed, (checksum, escapes, coverage) in output.items():
+              assert (checksum, escapes) == expected[seed], (seed, checksum, escapes)
+              assert len(coverage) == 16, (seed, coverage)
+              assert sum(coverage) == 8192, (seed, coverage)
+              assert all(n > 0 for n in coverage), (seed, coverage)
+          print('Metamorphic operations: 32768 x 3 JIT modes = 98304 per build')
+          PY
+          sha256sum fuzz-results/*.json
+
+      - name: Confirm real JIT trace compilation
+        if: matrix.name == 'release-nts'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sapi/cli/php -n \
+            -d opcache.enable_cli=1 \
+            -d opcache.file_update_protection=0 \
+            -d opcache.jit=tracing \
+            -d opcache.jit_hot_loop=16 \
+            -d opcache.jit_debug=16384 \
+            -d opcache.jit_buffer_size=128M \
+            Zend/tests/optimizer/native_scalar_replacement_fuzz.php \
+            > jit-proof.json 2> jit-proof.log
+          grep -Eq 'TRACE [0-9]+ compiled' jit-proof.log
+          head -n 20 jit-proof.log
+
       - name: Preserve benchmark evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -145,4 +209,6 @@ jobs:
           path: |
             baseline-results/*.json
             oracle-results/*.json
+            fuzz-results/*.json
+            jit-proof.log
           if-no-files-found: ignore
