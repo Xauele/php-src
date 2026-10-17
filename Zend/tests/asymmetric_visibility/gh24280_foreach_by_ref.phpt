@@ -75,6 +75,8 @@ if (ReflectionReference::fromArrayElement((array) $existingReference, 'value') =
 echo "existing reference outside: ";
 acquireReference($existingReference);
 var_dump($existingReference->value);
+$existingReference->updateInside();
+var_dump($existingReference->value);
 
 $protected = new ProtectedSetterChild();
 echo "protected outside: ";
@@ -99,6 +101,7 @@ string(8) "original"
 string(6) "inside"
 existing reference outside: Cannot indirectly modify private(set) property PrivateSetter::$value from global scope
 string(8) "original"
+string(6) "inside"
 protected outside: Cannot indirectly modify protected(set) property ProtectedSetter::$value from global scope
 int(10)
 int(11)
