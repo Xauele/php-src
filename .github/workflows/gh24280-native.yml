@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: gh24280-${{ github.workflow }}-${{ github.ref }}
+  group: gh24280-${{ github.event.pull_request.head.ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
@@ -62,7 +62,18 @@ jobs:
           ):
               assert signal in result.stdout, f'Missing RED signal {signal!r}: {result.stdout}'
           assert 'readonly outside: Cannot acquire reference' in result.stdout
-          print('RED verified: four setter-visibility bypasses; readonly control intact')
+
+          stress = Path('candidate/Zend/tests/asymmetric_visibility/gh24280_foreach_by_ref_stress.phpt').read_text()
+          program = stress.split('--FILE--\n', 1)[1].split('--EXPECT--\n', 1)[0]
+          with tempfile.TemporaryDirectory() as directory:
+              script = Path(directory) / 'gh24280_stress.php'
+              script.write_text(program)
+              stress_result = subprocess.run(['baseline/sapi/cli/php', '-n', str(script)], text=True, capture_output=True)
+          assert stress_result.returncode != 0, 'Unexpected GREEN on unmodified PHP'
+          assert 'Forbidden reference accepted' in stress_result.stdout + stress_result.stderr, (
+              'Baseline failed for an unrelated reason: ' + stress_result.stdout + stress_result.stderr
+          )
+          print('RED verified: four direct bypasses plus 3000-iteration stress failure')
           PY
 
   native-green:
@@ -111,6 +122,7 @@ jobs:
           files = [
               Path('Zend/tests/asymmetric_visibility/gh24280_foreach_by_ref.phpt'),
               Path('Zend/tests/asymmetric_visibility/gh24280_foreach_by_ref_controls.phpt'),
+              Path('Zend/tests/asymmetric_visibility/gh24280_foreach_by_ref_stress.phpt'),
           ]
           opcache = Path('modules/opcache.so').resolve()
           assert opcache.is_file(), 'OPcache module missing: do not silently skip JIT'
@@ -121,6 +133,16 @@ jobs:
               'jit-function': ['-n', '-d', f'zend_extension={opcache}', '-d', 'opcache.enable_cli=1', '-d', 'opcache.jit_buffer_size=64M', '-d', 'opcache.jit=function'],
           }
           php = str(Path('sapi/cli/php').resolve())
+          for name, options in modes.items():
+              if not name.startswith('jit-'):
+                  continue
+              status = subprocess.run(
+                  [php, *options, '-r', "echo (int) (opcache_get_status(false)['jit']['on'] ?? false);"],
+                  text=True, capture_output=True,
+              )
+              assert status.returncode == 0 and status.stdout.strip() == '1' and not status.stderr, (
+                  f'JIT mode {name} is not operational: stdout={status.stdout}, stderr={status.stderr}'
+              )
           with tempfile.TemporaryDirectory() as directory:
               for test in files:
                   content = test.read_text()
