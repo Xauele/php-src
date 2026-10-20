@@ -1,0 +1,3 @@
+GH-24280 negative-control trigger (non-PHP, no runtime or build changes).
+The unchanged PHP-8.4 source at 6ec698758e50d0356a7befeca6b2bfaffffa15aa is tested.
+This inert file exists only to bypass the native Test workflow paths-ignore on *.md.
