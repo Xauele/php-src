@@ -1,0 +1,67 @@
+name: GH-24280 PHP 8.6 qualification
+on:
+  push:
+    branches: [ci/gh24280-php86-20261023]
+permissions:
+  contents: read
+jobs:
+  native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: PHP-8.6
+            base: 644b5e88967cf3521de9631521849bf48daed390
+            flags: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 1e13dd338061f514c1c470a260ee28d0f6052a5a
+          path: candidate
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: php/php-src
+          ref: ${{ matrix.base }}
+          path: source
+          persist-credentials: false
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf bison re2c build-essential pkg-config libxml2-dev php-cli
+      - name: Build exact unmodified base
+        working-directory: source
+        run: |
+          ./buildconf --force
+          php Zend/zend_vm_gen.php
+          ./configure --disable-all --enable-cli --disable-cgi --enable-debug ${{ matrix.flags }}
+          make -j2 > /tmp/build-base.log 2>&1 || { tail -100 /tmp/build-base.log; exit 1; }
+      - name: Reproduce setter bypass on exact base
+        run: python3 candidate/.github/gh24280/check.py baseline source/sapi/cli/php candidate/Zend/tests/asymmetric_visibility
+      - name: Apply patch and rebuild
+        working-directory: source
+        run: |
+          git apply --check ../candidate/.github/gh24280/vm.patch
+          git apply ../candidate/.github/gh24280/vm.patch
+          cp ../candidate/Zend/tests/asymmetric_visibility/gh24280*.phpt Zend/tests/asymmetric_visibility/
+          php Zend/zend_vm_gen.php
+          if [ '${{ matrix.version }}' = 'PHP-8.4' ]; then cmp Zend/zend_vm_execute.h ../candidate/Zend/zend_vm_execute.h; fi
+          make -j2 > /tmp/build-patch.log 2>&1 || { tail -100 /tmp/build-patch.log; exit 1; }
+      - name: Complete Zend test suite
+        working-directory: source
+        env:
+          NO_INTERACTION: 1
+          REPORT_EXIT_STATUS: 1
+        run: sapi/cli/php -n run-tests.php -q -j2 Zend/tests
+      - name: Interpreter OPcache and real JIT checks
+        if: success() || failure()
+        run: python3 candidate/.github/gh24280/check.py patched source/sapi/cli/php source/Zend/tests/asymmetric_visibility
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: diagnostics-${{ matrix.version }}
+          path: |
+            source/Zend/tests/**/*.diff
+            source/Zend/tests/**/*.out
